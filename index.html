@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Visor de Libro Virtual</title>
+    <!-- Tailwind CSS para estilos rápidos y limpios -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- PDF.js para renderizar el documento PDF -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <!-- StPageFlip para la animación 3D de pasar página -->
+    <script src="https://cdn.jsdelivr.net/npm/page-flip@2.0.7/dist/js/page-flip.browser.min.js"></script>
+    <!-- Iconos Lucide -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        body {
+            background-color: #0a0a0a;
+            color: #ffffff;
+            overflow: hidden;
+            user-select: none;
+            font-family: system-ui, -apple-system, sans-serif;
+        }
+        #book-viewport {
+            transition: transform 0.25s ease-out;
+            transform-origin: center center;
+        }
+        .page-wrapper {
+            background-color: #ffffff;
+            box-shadow: inset 0 0 25px rgba(0, 0, 0, 0.12);
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .page-wrapper img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            pointer-events: none;
+        }
+        /* Sombra central realista del pliegue del libro */
+        .page-wrapper.--left {
+            border-right: 1px solid rgba(0, 0, 0, 0.15);
+            box-shadow: inset -12px 0 20px -10px rgba(0, 0, 0, 0.25);
+        }
+        .page-wrapper.--right {
+            border-left: 1px solid rgba(0, 0, 0, 0.15);
+            box-shadow: inset 12px 0 20px -10px rgba(0, 0, 0, 0.25);
+        }
+    </style>
+</head>
+<body class="h-screen w-screen flex flex-col justify-between relative">
+
+    <!-- Pantalla de Carga -->
+    <div id="loader" class="fixed inset-0 z-50 bg-[#0a0a0a] flex flex-col items-center justify-center p-6 text-center">
+        <div class="w-12 h-12 border-4 border-zinc-800 border-t-red-600 rounded-full animate-spin mb-4"></div>
+        <h2 class="text-lg font-medium tracking-wide text-white mb-1">Cargando libro...</h2>
+        <p id="loader-status" class="text-sm text-zinc-400">Preparando documento</p>
+        <div class="w-64 h-1.5 bg-zinc-900 rounded-full overflow-hidden mt-4">
+            <div id="progress-bar" class="h-full bg-red-600 transition-all duration-200" style="width: 0%"></div>
+        </div>
+    </div>
+
+    <!-- Pantalla de Error (CORS o archivo no encontrado) -->
+    <div id="error-screen" class="hidden fixed inset-0 z-50 bg-[#0a0a0a] flex flex-col items-center justify-center p-6 text-center">
+        <div class="w-14 h-14 rounded-full bg-red-950/50 border border-red-800/60 flex items-center justify-center text-red-500 mb-4">
+            <i data-lucide="alert-triangle" class="w-7 h-7"></i>
+        </div>
+        <h2 class="text-xl font-semibold text-white mb-2">No se pudo cargar "libro.pdf"</h2>
+        <p id="error-message" class="text-sm text-zinc-400 max-w-md leading-relaxed mb-6">
+            Asegúrate de que el archivo <code class="text-red-400 bg-zinc-900 px-1.5 py-0.5 rounded">libro.pdf</code> esté en la misma carpeta que este archivo HTML y de abrirlo mediante un servidor web local (como Live Server) o un hosting (GitHub Pages / Netlify), ya que los navegadores bloquean la lectura local directa por seguridad (CORS).
+        </p>
+        <button onclick="location.reload()" class="px-5 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition">
+            Reintentar
+        </button>
+    </div>
+
+    <!-- Área Principal del Libro -->
+    <main class="flex-1 w-full h-full flex items-center justify-center p-4 md:p-8 overflow-hidden relative">
+        <div id="book-viewport" class="flex items-center justify-center">
+            <div id="flipbook" class="shadow-2xl"></div>
+        </div>
+    </main>
+
+    <!-- Barra de Controles Flotante Inferior -->
+    <footer class="fixed bottom-4 left-1/2 -translate-x-1/2 z-40">
+        <div class="flex items-center gap-2 sm:gap-4 px-4 py-2.5 bg-zinc-950/90 backdrop-blur-md border border-zinc-800/80 rounded-full shadow-2xl">
+            
+            <!-- Página Anterior -->
+            <button id="btn-prev" title="Página anterior (Flecha Izquierda)" class="p-2 text-zinc-300 hover:text-white hover:bg-zinc-800 rounded-full transition disabled:opacity-30">
+                <i data-lucide="chevron-left" class="w-5 h-5"></i>
+            </button>
+
+            <!-- Indicador de Página -->
+            <div class="text-xs sm:text-sm font-medium text-zinc-300 px-2 min-w-[110px] text-center">
+                Pág. <span id="current-page" class="text-white font-semibold">1</span> de <span id="total-pages">--</span>
+            </div>
+
+            <!-- Página Siguiente -->
+            <button id="btn-next" title="Página siguiente (Flecha Derecha)" class="p-2 text-zinc-300 hover:text-white hover:bg-zinc-800 rounded-full transition disabled:opacity-30">
+                <i data-lucide="chevron-right" class="w-5 h-5"></i>
+            </button>
+
+            <div class="h-5 w-[1px] bg-zinc-800"></div>
+
+            <!-- Controles de Zoom -->
+            <button id="btn-zoom-out" title="Alejar" class="p-2 text-zinc-300 hover:text-white hover:bg-zinc-800 rounded-full transition">
+                <i data-lucide="zoom-out" class="w-4 h-4"></i>
+            </button>
+            <button id="btn-zoom-reset" title="Restablecer Zoom" class="text-xs text-zinc-400 hover:text-white px-1 font-mono">
+                <span id="zoom-level">100%</span>
+            </button>
+            <button id="btn-zoom-in" title="Acercar" class="p-2 text-zinc-300 hover:text-white hover:bg-zinc-800 rounded-full transition">
+                <i data-lucide="zoom-in" class="w-4 h-4"></i>
+            </button>
+
+            <div class="h-5 w-[1px] bg-zinc-800"></div>
+
+            <!-- Pantalla Completa -->
+            <button id="btn-fullscreen" title="Pantalla completa" class="p-2 text-zinc-300 hover:text-red-500 hover:bg-zinc-800 rounded-full transition">
+                <i data-lucide="maximize" class="w-4 h-4"></i>
+            </button>
+        </div>
+    </footer>
+
+    <script>
+        // Cambia v=1 por v=2 cada vez que subas un PDF nuevo
+        const PDF_URL = './libro.pdf?v=2';
+        
+        // Configurar worker de PDF.js
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+        // Inicializar iconos
+        lucide.createIcons();
+
+        // Referencias DOM
+        const loader = document.getElementById('loader');
+        const loaderStatus = document.getElementById('loader-status');
+        const progressBar = document.getElementById('progress-bar');
+        const errorScreen = document.getElementById('error-screen');
+        const flipbookEl = document.getElementById('flipbook');
+        const bookViewport = document.getElementById('book-viewport');
+        
+        const currentPageEl = document.getElementById('current-page');
+        const totalPagesEl = document.getElementById('total-pages');
+        const zoomLevelEl = document.getElementById('zoom-level');
+
+        let pageFlip = null;
+        let currentZoom = 1;
+        let pageAspectRatio = 0.707; // Proporción A4 por defecto hasta leer el PDF
+
+        async function initBook() {
+            try {
+                loaderStatus.textContent = 'Descargando documento...';
+                const loadingTask = pdfjsLib.getDocument(PDF_URL);
+                const pdf = await loadingTask.promise;
+                const numPages = pdf.numPages;
+
+                const pageImages = [];
+
+                // Renderizar cada página del PDF en alta calidad
+                for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+                    loaderStatus.textContent = `Procesando página ${pageNum} de ${numPages}...`;
+                    const progress = Math.round((pageNum / numPages) * 100);
+                    progressBar.style.width = `${progress}%`;
+
+                    const page = await pdf.getPage(pageNum);
+                    
+                    // Obtener proporción real de la primera página
+                    if (pageNum === 1) {
+                        const baseViewport = page.getViewport({ scale: 1 });
+                        pageAspectRatio = baseViewport.width / baseViewport.height;
+                    }
+
+                    // Escala 2.0 para asegurar texto nítido al hacer zoom
+                    const viewport = page.getViewport({ scale: 2.0 });
+                    const canvas = document.createElement('canvas');
+                    const context = canvas.getContext('2d');
+                    canvas.width = viewport.width;
+                    canvas.height = viewport.height;
+
+                    await page.render({
+                        canvasContext: context,
+                        viewport: viewport
+                    }).promise;
+
+                    pageImages.push(canvas.toDataURL('image/jpeg', 0.92));
+                }
+
+                buildFlipbook(pageImages);
+
+            } catch (error) {
+                console.error('Error al cargar el PDF:', error);
+                loader.classList.add('hidden');
+                errorScreen.classList.remove('hidden');
+            }
+        }
+
+        function calculateBookDimensions() {
+            const isMobile = window.innerWidth < 768;
+            const availableHeight = window.innerHeight - 110; // Espacio para controles
+            const availableWidth = window.innerWidth - 40;
+
+            let pageHeight = availableHeight;
+            let pageWidth = pageHeight * pageAspectRatio;
+
+            // En escritorio son 2 páginas lado a lado; en móvil 1 página
+            const totalBookWidth = isMobile ? pageWidth : pageWidth * 2;
+
+            if (totalBookWidth > availableWidth) {
+                pageWidth = isMobile ? availableWidth : availableWidth / 2;
+                pageHeight = pageWidth / pageAspectRatio;
+            }
+
+            return {
+                width: Math.floor(pageWidth),
+                height: Math.floor(pageHeight),
+                isMobile
+            };
+        }
+
+        function buildFlipbook(images) {
+            flipbookEl.innerHTML = '';
+
+            // Si el PDF tiene un número impar de páginas, agregamos una guarda interna
+            // antes de la última página para que la contraportada cierre igual que la portada
+            const finalPages = [...images];
+            if (finalPages.length > 2 && finalPages.length % 2 !== 0) {
+                const backCover = finalPages.pop();
+                finalPages.push('BLANK_PAGE'); // Hoja de guarda interior trasera
+                finalPages.push(backCover);    // Contraportada exterior
+            }
+
+            finalPages.forEach((imgSrc, index) => {
+                const pageDiv = document.createElement('div');
+                pageDiv.className = 'page-wrapper';
+
+                // Portada (primera) y Contraportada (última) con física de tapa dura
+                if (index === 0 || index === finalPages.length - 1) {
+                    pageDiv.setAttribute('data-density', 'hard');
+                }
+
+                if (imgSrc === 'BLANK_PAGE') {
+                    // Hoja interna de cortesía en blanco suave antes de la contraportada
+                    pageDiv.style.backgroundColor = '#fafafa';
+                } else {
+                    const img = document.createElement('img');
+                    img.src = imgSrc;
+                    img.alt = `Página ${index + 1}`;
+                    pageDiv.appendChild(img);
+                }
+
+                flipbookEl.appendChild(pageDiv);
+            });
+
+            // Actualizar el total de páginas en el contador inferior
+            totalPagesEl.textContent = finalPages.length;
+
+            const dims = calculateBookDimensions();
+
+            pageFlip = new St.PageFlip(flipbookEl, {
+                width: dims.width,
+                height: dims.height,
+                size: 'fixed',
+                minWidth: 200,
+                maxWidth: 1200,
+                minHeight: 280,
+                maxHeight: 1600,
+                maxShadowOpacity: 0.5,
+                showCover: true,
+                mobileScrollSupport: false,
+                usePortrait: dims.isMobile,
+                flippingTime: 700,
+                swipeDistance: 30
+            });
+
+            pageFlip.loadFromHTML(document.querySelectorAll('.page-wrapper'));
+
+            // Actualizar contador de páginas al pasar hoja
+            pageFlip.on('flip', (e) => {
+                updatePageCounter(e.data);
+            });
+
+            updatePageCounter(0);
+
+            // Ocultar pantalla de carga
+            setTimeout(() => {
+                loader.classList.add('hidden');
+            }, 300);
+        }
+
+        function updatePageCounter(pageIndex) {
+            const total = pageFlip.getPageCount();
+            const isPortrait = pageFlip.getSettings().usePortrait;
+            const current = pageIndex + 1;
+
+            if (isPortrait || current === 1 || current === total) {
+                currentPageEl.textContent = `${current}`;
+            } else {
+                const next = Math.min(current + 1, total);
+                currentPageEl.textContent = `${current}-${next}`;
+            }
+        }
+
+        // Controles de Navegación
+        document.getElementById('btn-prev').addEventListener('click', () => {
+            if (pageFlip) pageFlip.flipPrev();
+        });
+
+        document.getElementById('btn-next').addEventListener('click', () => {
+            if (pageFlip) pageFlip.flipNext();
+        });
+
+        // Navegación con Teclado
+        document.addEventListener('keydown', (e) => {
+            if (!pageFlip) return;
+            if (e.key === 'ArrowLeft') pageFlip.flipPrev();
+            if (e.key === 'ArrowRight') pageFlip.flipNext();
+        });
+
+        // Controles de Zoom
+        function applyZoom() {
+            bookViewport.style.transform = `scale(${currentZoom})`;
+            zoomLevelEl.textContent = `${Math.round(currentZoom * 100)}%`;
+        }
+
+        document.getElementById('btn-zoom-in').addEventListener('click', () => {
+            if (currentZoom < 2.0) {
+                currentZoom = +(currentZoom + 0.2).toFixed(1);
+                applyZoom();
+            }
+        });
+
+        document.getElementById('btn-zoom-out').addEventListener('click', () => {
+            if (currentZoom > 0.6) {
+                currentZoom = +(currentZoom - 0.2).toFixed(1);
+                applyZoom();
+            }
+        });
+
+        document.getElementById('btn-zoom-reset').addEventListener('click', () => {
+            currentZoom = 1;
+            applyZoom();
+        });
+
+        // Pantalla Completa
+        document.getElementById('btn-fullscreen').addEventListener('click', () => {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen().catch(() => {});
+            } else {
+                document.exitFullscreen();
+            }
+        });
+
+        // Reajustar tamaño al redimensionar ventana
+        let resizeTimeout;
+        window.addEventListener('resize', () => {
+            clearTimeout(resizeTimeout);
+            resizeTimeout = setTimeout(() => {
+                if (!pageFlip) return;
+                const dims = calculateBookDimensions();
+                pageFlip.update({
+                    width: dims.width,
+                    height: dims.height,
+                    usePortrait: dims.isMobile
+                });
+            }, 250);
+        });
+
+        // Iniciar aplicación
+        initBook();
+    </script>
+</body>
+</html>
